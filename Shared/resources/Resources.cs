@@ -34,6 +34,8 @@ namespace Shared.resources
                 LoadWebFiles(resourcePath + "/web");
             else
             {
+                //editor8182381 — Scan all loaded type codes to find safe starting points for custom allocation
+                GameData.InitCustomTypeCodes();
                 //editor8182381 — Pre-register custom ground type code range before loading maps
                 GameData.RegisterCustomGroundRange();
                 GameData.LoadMaps($"{resourcePath}/worlds");

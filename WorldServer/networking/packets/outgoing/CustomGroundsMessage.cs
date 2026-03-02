@@ -47,6 +47,15 @@ namespace WorldServer.networking.packets.outgoing
                         bw.Write((byte)(entry.NoWalk ? 1 : 0));
                         bw.Write((sbyte)entry.BlendPriority);
                         bw.Write(entry.Speed);
+                        //editor8182381 — Write advanced ground properties (damage, sink, animate, push, slide)
+                        bw.Write((short)entry.MinDamage);
+                        bw.Write((short)entry.MaxDamage);
+                        bw.Write(entry.Sink);
+                        bw.Write((byte)entry.AnimateType);
+                        bw.Write(entry.AnimateDx);
+                        bw.Write(entry.AnimateDy);
+                        bw.Write(entry.Push);
+                        bw.Write(entry.SlideAmount);
                     }
                     bw.Flush();
                     compressed = ZlibStream.CompressBuffer(ms.ToArray());

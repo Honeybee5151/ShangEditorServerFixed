@@ -23,6 +23,15 @@ namespace Shared.resources
         public bool NoWalk; // true if ground tile blocks movement
         public int BlendPriority = -1; // tile blend priority (-1 = default/lowest, higher wins at edges)
         public float Speed = 1.0f; // movement speed multiplier (1.0 = normal)
+        //editor8182381 — Advanced ground tile properties (damage, sink, animate, push, slide)
+        public int MinDamage = 0; // min damage per tick (~500ms)
+        public int MaxDamage = 0; // max damage per tick
+        public bool Sink = false; // sinking visual effect (water/lava)
+        public int AnimateType = 0; // 0=none, 1=Wave, 2=Flow
+        public float AnimateDx = 0; // horizontal flow direction
+        public float AnimateDy = 0; // vertical flow direction
+        public bool Push = false; // push entities in animate direction
+        public float SlideAmount = 0; // sliding effect (ice)
     }
 
     //editor8182381 — Custom object entry for JM maps with pixel-based sprites
@@ -55,14 +64,53 @@ namespace Shared.resources
         public Dictionary<string, List<CustomGroundEntry>> JmCustomGrounds = new Dictionary<string, List<CustomGroundEntry>>();
         public Dictionary<string, List<CustomObjectEntry>> JmCustomObjects = new Dictionary<string, List<CustomObjectEntry>>();
 
-        //editor8182381 — Global type code allocator for custom objects (thread-safe, prevents collisions across dungeons)
+        //editor8182381 — Global type code allocators (thread-safe, prevents collisions across dungeons)
+        private ushort _nextCustomGroundTypeCode = 0x8000;
         private ushort _nextCustomObjTypeCode = 0x9000;
+        private readonly object _customGroundLock = new object();
         private readonly object _customObjLock = new object();
 
-        //editor8182381 — Allocate a unique type code for a custom object. Thread-safe.
+        //editor8182381 — Snapshot of prod type codes taken at startup — used to skip collisions during allocation
+        private HashSet<ushort> _prodTileCodes = new HashSet<ushort>();
+        private HashSet<ushort> _prodObjCodes = new HashSet<ushort>();
+
+        //editor8182381 — Initialize prod type code snapshots so custom allocators skip over them
+        public void InitCustomTypeCodes()
+        {
+            _prodTileCodes = new HashSet<ushort>(Tiles.Keys);
+            _prodObjCodes = new HashSet<ushort>(ObjectDescs.Keys);
+            foreach (var t in IdToObjectType.Values)
+                _prodObjCodes.Add(t);
+
+            // Advance starting codes past any prod codes in the custom range
+            while (_prodTileCodes.Contains(_nextCustomGroundTypeCode) && _nextCustomGroundTypeCode < 0xEFFF)
+                _nextCustomGroundTypeCode++;
+            while (_prodObjCodes.Contains(_nextCustomObjTypeCode) && _nextCustomObjTypeCode < 0xEFFF)
+                _nextCustomObjTypeCode++;
+
+            Log.Info($"Custom type codes initialized: grounds start=0x{_nextCustomGroundTypeCode:X4} ({_prodTileCodes.Count} prod tiles), objects start=0x{_nextCustomObjTypeCode:X4} ({_prodObjCodes.Count} prod objects)");
+        }
+
+        //editor8182381 — Allocate a unique type code for a custom ground tile. Thread-safe. Skips prod codes.
+        public ushort AllocateCustomGroundTypeCode()
+        {
+            lock (_customGroundLock)
+            {
+                while (_prodTileCodes.Contains(_nextCustomGroundTypeCode))
+                    _nextCustomGroundTypeCode++;
+                return _nextCustomGroundTypeCode++;
+            }
+        }
+
+        //editor8182381 — Allocate a unique type code for a custom object. Thread-safe. Skips prod codes.
         public ushort AllocateCustomObjTypeCode()
         {
-            lock (_customObjLock) return _nextCustomObjTypeCode++;
+            lock (_customObjLock)
+            {
+                while (_prodObjCodes.Contains(_nextCustomObjTypeCode))
+                    _nextCustomObjTypeCode++;
+                return _nextCustomObjTypeCode++;
+            }
         }
 
         //editor8182381 — Register custom object entries into shared dictionaries. Thread-safe.
@@ -141,14 +189,14 @@ namespace Shared.resources
             return xml;
         }
 
-        //editor8182381 — Pre-allocate placeholder TileDesc for custom ground type codes 0x8000-0xEFFF
+        //editor8182381 — Pre-allocate placeholder TileDesc for custom ground type codes (dynamic range)
         public void RegisterCustomGroundRange()
         {
             var placeholderXml = XElement.Parse(
                 "<Ground type=\"0x8000\" id=\"CustomGround\">" +
                 "<Texture><File>lofiEnvironment2</File><Index>0x0b</Index></Texture>" +
                 "</Ground>");
-            for (ushort t = 0x8000; t <= 0xEFFF; t++)
+            for (ushort t = _nextCustomGroundTypeCode; t <= 0xEFFF; t++)
             {
                 if (!Tiles.ContainsKey(t))
                     Tiles[t] = new TileDesc(t, placeholderXml);

@@ -24,9 +24,8 @@ namespace Shared.terrain
             var dat = ZlibStream.UncompressBuffer(obj.data);
             var tileDict = new Dictionary<short, TerrainTile>();
 
-            //editor8182381 — Custom ground dedup: groundKey → type code
+            //editor8182381 — Custom ground dedup: groundKey → type code (allocated via XmlData to skip prod codes)
             var customGroundMap = new Dictionary<string, ushort>();
-            ushort nextCustomCode = 0x8000;
             customGrounds = new List<CustomGroundEntry>();
 
             //editor8182381 — Custom object dedup: (pixels|class) → typeCode/objectId
@@ -46,10 +45,34 @@ namespace Shared.terrain
                 {
                     var bp = o.blendPriority ?? -1;
                     var spd = o.speed ?? 1.0f;
-                    var groundKey = o.ground + (o.blocked == true ? "|blocked" : "") + (bp != -1 ? $"|bp{bp}" : "") + (spd != 1.0f ? $"|spd{spd}" : "");
+                    //editor8182381 — Parse advanced ground properties (damage, sink, animate, push, slide)
+                    var minDmg = (o.damage != null && o.damage.Length >= 1) ? o.damage[0] : 0;
+                    var maxDmg = (o.damage != null && o.damage.Length >= 2) ? o.damage[1] : 0;
+                    var sink = o.sink == true;
+                    var animType = 0;
+                    var animDx = 0f;
+                    var animDy = 0f;
+                    if (o.animate != null)
+                    {
+                        animType = o.animate.type == "Wave" ? 1 : o.animate.type == "Flow" ? 2 : 0;
+                        animDx = o.animate.dx;
+                        animDy = o.animate.dy;
+                    }
+                    var push = o.push == true;
+                    var slideAmt = o.slide ?? 0f;
+                    //editor8182381 — Dedup key includes all advanced properties to avoid merging distinct tiles
+                    var groundKey = o.ground
+                        + (o.blocked == true ? "|blocked" : "")
+                        + (bp != -1 ? $"|bp{bp}" : "")
+                        + (spd != 1.0f ? $"|spd{spd}" : "")
+                        + (minDmg > 0 || maxDmg > 0 ? $"|dmg{minDmg}-{maxDmg}" : "")
+                        + (sink ? "|sink" : "")
+                        + (animType != 0 ? $"|anim{animType}_{animDx}_{animDy}" : "")
+                        + (push ? "|push" : "")
+                        + (slideAmt != 0 ? $"|slide{slideAmt}" : "");
                     if (!customGroundMap.TryGetValue(groundKey, out tileId))
                     {
-                        tileId = nextCustomCode++;
+                        tileId = data.AllocateCustomGroundTypeCode();
                         customGroundMap[groundKey] = tileId;
                         byte[] decodedGndPixels;
                         try { decodedGndPixels = System.Convert.FromBase64String(o.groundPixels ?? ""); }
@@ -60,6 +83,7 @@ namespace Shared.terrain
                             Buffer.BlockCopy(decodedGndPixels, 0, padded, 0, decodedGndPixels.Length);
                             decodedGndPixels = padded;
                         }
+                        //editor8182381 — CustomGroundEntry with all advanced properties
                         customGrounds.Add(new CustomGroundEntry
                         {
                             TypeCode = tileId,
@@ -68,7 +92,15 @@ namespace Shared.terrain
                             DecodedPixels = decodedGndPixels,
                             NoWalk = o.blocked == true,
                             BlendPriority = bp,
-                            Speed = spd
+                            Speed = spd,
+                            MinDamage = minDmg,
+                            MaxDamage = maxDmg,
+                            Sink = sink,
+                            AnimateType = animType,
+                            AnimateDx = animDx,
+                            AnimateDy = animDy,
+                            Push = push,
+                            SlideAmount = slideAmt
                         });
                     }
                 }
@@ -147,15 +179,24 @@ namespace Shared.terrain
             }
 
             //editor8182381 — Override TileDesc for custom ground tiles with special properties
+            //editor8182381 — Extended condition includes advanced properties (damage, sink, animate, push, slide)
             foreach (var cg in customGrounds)
             {
-                if (cg.NoWalk || cg.BlendPriority != -1 || cg.Speed != 1.0f)
+                if (cg.NoWalk || cg.BlendPriority != -1 || cg.Speed != 1.0f ||
+                    cg.MinDamage > 0 || cg.MaxDamage > 0 || cg.Sink || cg.Push || cg.SlideAmount != 0)
                 {
                     var xml = $"<Ground type=\"0x{cg.TypeCode:X4}\" id=\"{cg.GroundId}\">" +
                         "<Texture><File>lofiEnvironment2</File><Index>0x0b</Index></Texture>" +
                         (cg.NoWalk ? "<NoWalk/>" : "") +
                         (cg.BlendPriority != -1 ? $"<BlendPriority>{cg.BlendPriority}</BlendPriority>" : "") +
                         (cg.Speed != 1.0f ? $"<Speed>{cg.Speed}</Speed>" : "") +
+                        //editor8182381 — Advanced property XML elements (damage, sink, animate, push, slide)
+                        (cg.MinDamage > 0 ? $"<MinDamage>{cg.MinDamage}</MinDamage>" : "") +
+                        (cg.MaxDamage > 0 ? $"<MaxDamage>{cg.MaxDamage}</MaxDamage>" : "") +
+                        (cg.Sink ? "<Sink/>" : "") +
+                        (cg.AnimateType != 0 ? $"<Animate dx=\"{cg.AnimateDx}\" dy=\"{cg.AnimateDy}\">{(cg.AnimateType == 1 ? "Wave" : "Flow")}</Animate>" : "") +
+                        (cg.Push ? "<Push/>" : "") +
+                        (cg.SlideAmount != 0 ? $"<SlideAmount>{cg.SlideAmount}</SlideAmount>" : "") +
                         "</Ground>";
                     data.Tiles[cg.TypeCode] = new TileDesc(cg.TypeCode, System.Xml.Linq.XElement.Parse(xml));
                 }
@@ -179,6 +220,14 @@ namespace Shared.terrain
             public int width;
         }
 
+        //editor8182381 — Animate sub-object for ground tile flow/wave animation
+        private class json_animate
+        {
+            public string type;
+            public float dx;
+            public float dy;
+        }
+
         //editor8182381 — Extended loc struct with custom ground/object fields
         private struct loc
         {
@@ -187,6 +236,12 @@ namespace Shared.terrain
             public bool? blocked;
             public int? blendPriority;
             public float? speed;
+            //editor8182381 — Advanced ground tile fields from JM (damage, sink, animate, push, slide)
+            public int[] damage;
+            public bool? sink;
+            public json_animate animate;
+            public bool? push;
+            public float? slide;
             public obj[] objs;
             public obj[] regions;
         }
